@@ -44,6 +44,11 @@ input.q::placeholder{color:var(--ink2)}
 .hide{display:none!important}
 .foot{margin-top:auto;font-size:13px;color:var(--ink2)}
 .foot a{color:inherit}
+details.box{background:var(--glass);border:1px solid var(--line);border-radius:20px;padding:18px}
+details.box summary{cursor:pointer;font-weight:600;font-size:17px}
+details.box>div{display:flex;flex-direction:column;gap:12px;margin-top:14px}
+.prow{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.box small{color:var(--ink2);font-size:14px}
 @media (prefers-reduced-motion:reduce){body{transition:none}}
 </style>
 </head>
@@ -59,7 +64,7 @@ input.q::placeholder{color:var(--ink2)}
 
   <!-- Haupt-Ansicht -->
   <section id="app" class="hide" style="display:flex;flex-direction:column;gap:22px">
-    <div class="meta"><span id="mWhere">Standort wird gesucht …</span><span id="mTemp"></span><span id="mClock"></span></div>
+    <div class="meta"><span id="mWhere">Standort wird gesucht …</span><span id="mPlace"></span><span id="mTemp"></span><span id="mClock"></span></div>
     <div>
       <h1 id="title">…</h1>
       <p class="sub" id="sub"></p>
@@ -68,12 +73,14 @@ input.q::placeholder{color:var(--ink2)}
     <div class="chips" id="chips" role="group" aria-label="Wetter wählen"></div>
 
     <div class="now">
-      <div><small>Vorschlag</small><br><b id="plName">–</b></div>
+      <div><small id="pickLabel">Vorschlag</small><br><b id="plName">–</b></div>
       <div class="row">
         <button class="btn big" id="btnPlay">Abspielen</button>
         <button class="btn ghost" id="btnOther">Andere Playlist</button>
         <button class="btn ghost" id="btnPause" aria-label="Pause">Pause</button>
         <button class="btn ghost" id="btnNext" aria-label="Nächster Titel">Weiter</button>
+        <button class="btn ghost" id="btnUp">Passt</button>
+        <button class="btn ghost" id="btnDown">Passt nicht</button>
       </div>
       <div class="msg" id="msg"></div>
     </div>
@@ -82,6 +89,18 @@ input.q::placeholder{color:var(--ink2)}
       <input class="q" id="custom" placeholder="Eigene Suche, z. B. Bossa Nova" enterkeyhint="search">
       <button class="btn ghost" id="btnCustom">Suchen</button>
     </div>
+
+    <details class="box"><summary>Meine Orte</summary><div>
+      <small>Speichere den Ort, an dem du gerade bist, mit einer festen Playlist. Dort spielt die App künftig immer diese.</small>
+      <div id="placeList"></div>
+      <input class="q" id="pName" placeholder="Name, z. B. Zuhause">
+      <input class="q" id="pLink" placeholder="Spotify-Link (leer = aktuelle Playlist)">
+      <div class="row"><input class="q" id="pR" type="number" min="30" value="100" aria-label="Radius in Metern"><button class="btn" id="btnSavePlace">Diesen Ort speichern</button></div>
+      <small>Die Zahl ist der Radius in Metern.</small>
+      <div class="row"><button class="btn ghost" id="btnExport">Einstellungen kopieren</button><button class="btn ghost" id="btnImport">Einstellungen einfügen</button></div>
+      <small>Orte und Gelerntes bleiben auf dem jeweiligen Gerät. Mit „kopieren“ und „einfügen“ überträgst du sie auf ein anderes Gerät (ersetzt dort die vorhandenen).</small>
+      <div class="msg" id="pMsg"></div>
+    </div></details>
   </section>
 
   <p class="foot"><a href="#" id="logout" class="hide">Abmelden</a></p>
@@ -158,13 +177,14 @@ function season(lat){
   return m>=2&&m<=4?'spring': m>=5&&m<=7?'summer': m>=8&&m<=10?'autumn':'winter';
 }
 
-let state = {lat:50.11, lon:8.68, where:'Frankfurt (Standard)', wx:'cloud', auto:true, temp:null, results:[], idx:0, queryUsed:''};
+let state = {lat:50.11, lon:8.68, where:'Frankfurt (Standard)', wx:'cloud', auto:true, temp:null, results:[], idx:0, queryUsed:'', gps:false, place:null, preset:null};
 
 function mood(){
   const t = timeOfDay(new Date().getHours()), s = season(state.lat), w = W[state.wx];
   const [tNoun,tEn,fem] = T[t], [sNoun,sEn] = S[s];
   const title = w.adj + (fem?'e ':'er ') + sNoun + tNoun.toLowerCase();
-  return {t,s,w,title,tEn,sEn, queries:[...w.q.map(q=>q+' '+tEn+' '+sEn), ...w.q.map(q=>q+' '+tEn), ...w.q]};
+  const P = PLACES[state.place], pq = P ? [P.q[0]+' '+tEn, P.q[1]] : [];
+  return {t,s,w,title,tEn,sEn, queries:[...pq, ...w.q.map(q=>q+' '+tEn+' '+sEn), ...w.q.map(q=>q+' '+tEn), ...w.q]};
 }
 
 function paint(){
@@ -176,6 +196,7 @@ function paint(){
   $('title').textContent = m.title;
   $('sub').textContent = 'Passende Playlists zu ' + WLABEL[state.wx].toLowerCase() + ', ' + T[m.t][0].toLowerCase() + ' und ' + S[m.s][0].toLowerCase() + '.';
   $('mWhere').textContent = state.where;
+  $('mPlace').textContent = state.preset ? state.preset.name : (state.place ? PLACES[state.place].l : '');
   $('mTemp').textContent = state.temp!=null ? Math.round(state.temp)+' °C' : '';
   $('mClock').textContent = new Date().toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'})+' Uhr';
   document.querySelectorAll('.chip').forEach(c=>c.setAttribute('aria-pressed', String((c.dataset.k==='auto')===state.auto && (state.auto || c.dataset.k===state.wx))));
@@ -188,6 +209,7 @@ function buildChips(){
     box.appendChild(b);};
   mk('auto','Automatisch');
   Object.keys(WLABEL).forEach(k=>mk(k,WLABEL[k]));
+  const rb=document.createElement('button');rb.className='chip';rb.textContent='Standort neu prüfen';rb.onclick=()=>refresh(true);box.appendChild(rb);
 }
 
 /* ---------- Standort & Wetter (Open-Meteo, ohne Schlüssel) ---------- */
@@ -199,11 +221,14 @@ function getPos(){
 }
 async function loadWeather(){
   const c = await getPos();
+  state.gps = !!c;
   if(c){ state.lat=c.latitude; state.lon=c.longitude; state.where='Dein Standort'; }
+  await loadPlace();
   try{
     const r = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${state.lat}&longitude=${state.lon}&current=temperature_2m,weather_code`);
     const d = await r.json();
-    state.wx = wmo(d.current.weather_code); state.temp = d.current.temperature_2m;
+    if(state.auto) state.wx = wmo(d.current.weather_code);
+    state.temp = d.current.temperature_2m;
   }catch(e){ $('msg').textContent='Wetter nicht abrufbar. Wähle es oben selbst aus.'; }
 }
 
@@ -214,16 +239,18 @@ async function search(q){
 }
 async function findPlaylists(custom){
   const msg = $('msg'); msg.className='msg'; msg.textContent='Suche passende Playlists …';
+  const raw = custom ? [] : [...(state.preset?[{uri:state.preset.uri,name:state.preset.name+' (dein Ort)',preset:true}]:[]), ...learned()];
+  const head = [...new Map(raw.map(p=>[p.uri,p])).values()];
   const list = custom ? [custom] : mood().queries;
   try{
-    for(const q of list){
-      const r = await search(q);
-      if(r.length){ state.results = r.sort(()=>Math.random()-.5); state.idx=0; state.queryUsed=q; showPick(); msg.textContent=''; return; }
-    }
-    msg.className='msg err'; msg.textContent='Keine Playlist gefunden. Versuche eine eigene Suche.';
-  }catch(e){ msg.className='msg err'; msg.textContent=e.message; }
+    let found=[];
+    for(const q of list){ const r = await search(q); if(r.length){ found=r.sort(()=>Math.random()-.5); state.queryUsed=q; break; } }
+    const seen = new Set(head.map(p=>p.uri));
+    state.results = [...head, ...found.filter(p=>!seen.has(p.uri))]; state.idx=0; showPick();
+    if(state.results.length) msg.textContent=''; else { msg.className='msg err'; msg.textContent='Keine Playlist gefunden. Versuche eine eigene Suche.'; }
+  }catch(e){ state.results=head; state.idx=0; showPick(); msg.className='msg err'; msg.textContent=e.message; }
 }
-function showPick(){ const p = state.results[state.idx]; $('plName').textContent = p ? p.name : '–'; }
+function showPick(){ const p = state.results[state.idx]; $('plName').textContent = p ? p.name : '–'; $('pickLabel').textContent = p?.preset ? 'Dein Ort' : p?.learned ? 'Gelernt: passt zu deinen Gewohnheiten' : 'Vorschlag'; }
 
 async function play(){
   const msg = $('msg'), p = state.results[state.idx];
@@ -233,11 +260,120 @@ async function play(){
     if(!dv.length){ msg.className='msg err'; msg.textContent='Kein Gerät gefunden. Öffne die Spotify-App auf diesem oder einem anderen Gerät, spiele kurz einen Titel und tippe dann nochmal auf Abspielen.'; return; }
     const d = dv.find(x=>x.is_active) || dv[0];
     await api('/me/player/play?device_id='+d.id,{method:'PUT',body:JSON.stringify({context_uri:p.uri})});
-    msg.className='msg'; msg.textContent='Läuft auf: '+d.name;
+    msg.className='msg'; msg.textContent='Läuft auf: '+d.name; learn(p,1);
   }catch(e){ msg.className='msg err'; msg.textContent=e.message; }
 }
 async function ctl(path,method){
   try{ await api(path,{method}); }catch(e){ $('msg').className='msg err'; $('msg').textContent=e.message; }
+}
+
+/* ---------- Ortstyp (OpenStreetMap), gespeicherte Orte, Lernen ---------- */
+const PLACES = {
+  park:{l:'Park',q:['park walk acoustic','nature calm']},
+  wald:{l:'Wald',q:['forest ambient','nature sounds calm']},
+  wasser:{l:'am Wasser',q:['beach chill','ocean calm']},
+  schule:{l:'Schule / Uni',q:['study focus lofi','focus instrumental']},
+  sport:{l:'Sport',q:['workout motivation','gym hits']},
+  cafe:{l:'Café',q:['coffee shop jazz','cafe acoustic']},
+  bar:{l:'Restaurant / Bar',q:['dinner jazz lounge','bar lounge chill']},
+  shop:{l:'Einkaufen',q:['shopping upbeat','feel good pop']},
+  bahn:{l:'Bahnhof / unterwegs',q:['commute playlist','road trip']},
+  ruhe:{l:'Ruhiger Ort',q:['calm ambient','peaceful piano']},
+  arbeit:{l:'Büro',q:['deep focus','work focus']}
+};
+function categorize(els){
+  const has=(k,vs)=>els.some(e=>e.tags&&e.tags[k]&&(vs===true||vs.includes(e.tags[k])));
+  if(has('amenity',['school','university','college','kindergarten','library'])) return 'schule';
+  if(has('leisure',['sports_centre','fitness_centre','pitch','stadium','swimming_pool'])) return 'sport';
+  if(has('amenity',['cafe'])) return 'cafe';
+  if(has('amenity',['restaurant','bar','pub','fast_food','biergarten'])) return 'bar';
+  if(has('natural',['water','beach','bay'])||has('leisure',['marina'])) return 'wasser';
+  if(has('leisure',['park','garden','playground','nature_reserve'])||has('landuse',['recreation_ground','village_green'])) return 'park';
+  if(has('landuse',['forest'])||has('natural',['wood'])) return 'wald';
+  if(has('landuse',['cemetery'])||has('amenity',['place_of_worship','grave_yard'])) return 'ruhe';
+  if(has('railway',['station','tram_stop','halt'])||has('public_transport',true)) return 'bahn';
+  if(has('shop',true)) return 'shop';
+  if(has('office',true)) return 'arbeit';
+  return null;
+}
+const dist=(a,b,c,d)=>{const R=6371e3,r=x=>x*Math.PI/180,h=Math.sin(r(c-a)/2)**2+Math.cos(r(a))*Math.cos(r(c))*Math.sin(r(d-b)/2)**2;return 2*R*Math.asin(Math.sqrt(h));};
+const savedPlaces=()=>{try{return JSON.parse(LS.get('places')||'[]')}catch(e){return[]}};
+async function loadPlace(){
+  state.place=null; state.preset=null;
+  if(!state.gps) return;
+  const sp = savedPlaces().map(p=>({p,d:dist(state.lat,state.lon,p.lat,p.lon)})).filter(x=>x.d<=x.p.r).sort((a,b)=>a.d-b.d)[0];
+  if(sp) state.preset=sp.p;
+  const {lat,lon}=state;
+  const q=`[out:json][timeout:8];is_in(${lat},${lon})->.a;(area.a[leisure];area.a[amenity];area.a[landuse];area.a[natural];nwr(around:30,${lat},${lon})[amenity];nwr(around:30,${lat},${lon})[shop];nwr(around:30,${lat},${lon})[railway];);out tags 40;`;
+  try{
+    const ac=new AbortController(), to=setTimeout(()=>ac.abort(),9000);
+    const r=await fetch('https://overpass-api.de/api/interpreter?data='+encodeURIComponent(q),{signal:ac.signal});
+    clearTimeout(to);
+    state.place=categorize((await r.json()).elements||[]);
+  }catch(e){}
+}
+function parseUri(s){
+  s=s.trim(); const m=s.match(/open\.spotify\.com\/(?:intl-[a-z]+\/)?(playlist|album|artist)\/([A-Za-z0-9]+)/);
+  if(m) return 'spotify:'+m[1]+':'+m[2];
+  return /^spotify:(playlist|album|artist):[A-Za-z0-9]+$/.test(s) ? s : null;
+}
+function renderPlaces(){
+  const box=$('placeList'), ps=savedPlaces(); box.textContent='';
+  if(!ps.length){ box.innerHTML='<small>Noch keine Orte gespeichert.</small>'; return; }
+  ps.forEach((p,i)=>{
+    const d=document.createElement('div'); d.className='prow';
+    const t=document.createElement('span'); t.textContent=p.name+' ('+p.r+' m)'; d.appendChild(t);
+    const b=document.createElement('button'); b.className='chip'; b.textContent='Löschen';
+    b.onclick=()=>{ ps.splice(i,1); LS.set('places',JSON.stringify(ps)); renderPlaces(); refresh(true); };
+    d.appendChild(b); box.appendChild(d);
+  });
+}
+function savePlace(){
+  const m=$('pMsg'), name=$('pName').value.trim(), link=$('pLink').value.trim();
+  if(!state.gps){ m.textContent='Standort nicht verfügbar. Erlaube den Standortzugriff im Browser.'; return; }
+  if(!name){ m.textContent='Gib dem Ort einen Namen.'; return; }
+  const uri = link ? parseUri(link) : state.results[state.idx]?.uri;
+  if(!uri){ m.textContent = link ? 'Link nicht erkannt. In Spotify: Teilen, Link kopieren.' : 'Wähle erst eine Playlist aus oder füge einen Link ein.'; return; }
+  const ps=savedPlaces(); ps.push({name,lat:state.lat,lon:state.lon,r:Math.max(30,Number($('pR').value)||100),uri});
+  LS.set('places',JSON.stringify(ps)); $('pName').value=''; $('pLink').value=''; m.textContent='Gespeichert.'; renderPlaces(); refresh(true);
+}
+async function exportAll(){
+  const s=JSON.stringify({places:savedPlaces(),hist:hist()});
+  try{ await navigator.clipboard.writeText(s); $('pMsg').textContent='Kopiert. Auf dem anderen Gerät „Einstellungen einfügen“ wählen.'; }
+  catch(e){ prompt('Diesen Text kopieren:',s); }
+}
+function importAll(){
+  const s=prompt('Kopierten Text hier einfügen:'); if(!s) return;
+  try{ const d=JSON.parse(s);
+    if(Array.isArray(d.places)) LS.set('places',JSON.stringify(d.places));
+    if(Array.isArray(d.hist)) LS.set('hist',JSON.stringify(d.hist.slice(-500)));
+    renderPlaces(); $('pMsg').textContent='Übernommen.'; refresh(true);
+  }catch(e){ $('pMsg').textContent='Der Text ist ungültig.'; }
+}
+
+/* Lernen: Jede Wiedergabe und jedes Feedback wird mit dem Kontext gespeichert.
+   Playlists, die in ähnlichem Kontext (Ort, Tageszeit, Wochenende, Wetter, Jahreszeit)
+   gut ankamen, werden zuerst vorgeschlagen. Ältere Einträge zählen weniger. */
+const ctxNow=()=>({t:timeOfDay(new Date().getHours()),we:[0,6].includes(new Date().getDay()),wx:state.wx,pl:state.place,s:season(state.lat)});
+const hist=()=>{try{return JSON.parse(LS.get('hist')||'[]')}catch(e){return[]}};
+function learn(p,v){
+  if(!p) return;
+  const h=hist(); h.push({u:p.uri,n:p.name,c:ctxNow(),v,ts:Date.now()});
+  LS.set('hist',JSON.stringify(h.slice(-500)));
+}
+function learned(){
+  const now=ctxNow(), sc={}, nm={};
+  for(const e of hist()){
+    const c=e.c; let sim=2*(c.t===now.t)+(c.we===now.we)+(c.wx===now.wx)+.5*(c.s===now.s)+(now.pl&&c.pl===now.pl?3:0);
+    sim*=Math.pow(.5,(Date.now()-e.ts)/864e5/60);
+    sc[e.u]=(sc[e.u]||0)+e.v*sim; nm[e.u]=e.n;
+  }
+  return Object.keys(sc).filter(u=>sc[u]>=3.5).sort((a,b)=>sc[b]-sc[a]).slice(0,3).map(u=>({uri:u,name:nm[u],learned:true}));
+}
+const sig=()=>[state.wx,state.place,state.preset?.name,timeOfDay(new Date().getHours())].join();
+async function refresh(force){
+  const b=sig(); await loadWeather(); paint();
+  if(force||sig()!==b) await findPlaylists();
 }
 
 /* ---------- Start ---------- */
@@ -248,9 +384,12 @@ async function init(){
   $('btnLogin').onclick = login;
   $('logout').onclick = e=>{e.preventDefault();['access','refresh','expires','verifier'].forEach(LS.del);showLogin();};
   $('btnPlay').onclick = play;
-  $('btnOther').onclick = ()=>{ if(!state.results.length) return; state.idx=(state.idx+1)%state.results.length; showPick(); play(); };
+  $('btnOther').onclick = ()=>{ if(!state.results.length) return; learn(state.results[state.idx],-.5); state.idx=(state.idx+1)%state.results.length; showPick(); play(); };
   $('btnPause').onclick = ()=>ctl('/me/player/pause','PUT');
   $('btnNext').onclick = ()=>ctl('/me/player/next','POST');
+  $('btnUp').onclick = ()=>{ learn(state.results[state.idx],2); $('msg').className='msg'; $('msg').textContent='Gemerkt: Das passt hier.'; };
+  $('btnDown').onclick = ()=>{ learn(state.results[state.idx],-3); $('btnOther').click(); };
+  $('btnSavePlace').onclick = savePlace; $('btnExport').onclick = exportAll; $('btnImport').onclick = importAll;
   const run = ()=>{ const v=$('custom').value.trim(); if(v) findPlaylists(v); };
   $('btnCustom').onclick = run; $('custom').onkeydown = e=>{ if(e.key==='Enter') run(); };
 
@@ -264,10 +403,10 @@ async function init(){
   }
   if(!(await token())){ showLogin(); return; }
 
-  showApp(); buildChips(); paint();
+  showApp(); buildChips(); renderPlaces(); paint();
   await loadWeather(); paint();
   await findPlaylists();
-  setInterval(paint, 60000);
+  setInterval(paint, 60000); setInterval(()=>refresh(false), 600000);
 }
 init();
 </script>
