@@ -6,6 +6,7 @@
 <meta name="theme-color" content="#14181f">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <title>Stimmungsradio</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&display=swap" rel="stylesheet">
@@ -49,6 +50,9 @@ details.box summary{cursor:pointer;font-weight:600;font-size:17px}
 details.box>div{display:flex;flex-direction:column;gap:12px;margin-top:14px}
 .chk{font-size:15px;color:var(--ink2);display:flex;gap:8px;align-items:center}
 select.q option{color:#14181f}
+#map{height:min(55vh,360px);border-radius:14px;overflow:hidden;z-index:0}
+.leaflet-container{font:inherit}
+.leaflet-tooltip.ptip{background:rgba(20,24,31,.85);color:#fff;border:0;box-shadow:none;font-weight:600}
 .prow{display:flex;justify-content:space-between;align-items:center;gap:10px}
 .box small{color:var(--ink2);font-size:14px}
 @media (prefers-reduced-motion:reduce){body{transition:none}}
@@ -85,6 +89,7 @@ select.q option{color:#14181f}
         <button class="btn ghost" id="btnDown">Passt nicht</button>
       </div>
       <div class="msg" id="msg"></div>
+      <div class="chips" id="plList" aria-label="Alle Vorschläge"></div>
     </div>
 
     <div class="row">
@@ -92,9 +97,17 @@ select.q option{color:#14181f}
       <button class="btn ghost" id="btnCustom">Suchen</button>
     </div>
 
-    <details class="box"><summary>Meine Orte</summary><div>
+    <details class="box" id="mapBox" open><summary>Karte</summary><div>
+      <div id="map" role="application" aria-label="Karte mit deinem Standort und gespeicherten Orten"></div>
+      <small>Blau: du. Orange: deine gespeicherten Orte (antippen zum Abspielen oder Ändern). Grün: Orte, die die App automatisch erkennt (Park, Bahnhof, Schule, …), antippen für Playlists oder zum Festlegen. Tippe auf eine freie Stelle, um dort einen Ort zu speichern oder Playlists dafür zu finden.</small>
+      <div class="row"><button class="btn ghost" id="btnLocate">Zu meinem Standort</button></div>
+      <div class="msg" id="mapMsg"></div>
+    </div></details>
+
+    <details class="box" id="placesBox"><summary>Meine Orte</summary><div>
       <small>Stelle dich an den Ort und speichere ihn, z. B. als Zuhause. Du kannst ihm eine feste Playlist zuordnen oder nur den Ortstyp festlegen, dann richtet die App ihre Vorschläge danach aus.</small>
       <div id="placeList"></div>
+      <div class="prow"><small id="pPick">Kein Punkt gewählt, es wird dein aktueller Standort genutzt.</small><button class="chip hide" id="btnUnpick">Verwerfen</button></div>
       <div class="row"><button class="btn ghost" id="btnHome">Das ist mein Zuhause</button></div>
       <input class="q" id="pName" placeholder="Name, z. B. Zuhause">
       <select class="q" id="pCat" aria-label="Ortstyp"></select>
@@ -111,10 +124,10 @@ select.q option{color:#14181f}
   <p class="foot"><a href="#" id="logout" class="hide">Abmelden</a></p>
 </main>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script>
 // ====== HIER DEINE CLIENT-ID VON developer.spotify.com EINTRAGEN ======
 const CLIENT_ID = '85cc4bedbc1e43219fe1f285a3c7299a';
-
 // ======================================================================
 
 const REDIRECT = location.origin + location.pathname;
@@ -183,7 +196,7 @@ function season(lat){
   return m>=2&&m<=4?'spring': m>=5&&m<=7?'summer': m>=8&&m<=10?'autumn':'winter';
 }
 
-let state = {lat:50.11, lon:8.68, where:'Frankfurt (Standard)', wx:'cloud', auto:true, temp:null, results:[], idx:0, queryUsed:'', gps:false, place:null, preset:null};
+let state = {lat:50.11, lon:8.68, where:'Frankfurt (Standard)', wx:'cloud', auto:true, temp:null, results:[], idx:0, queryUsed:'', gps:false, place:null, preset:null, pick:null};
 
 function mood(){
   const t = timeOfDay(new Date().getHours()), s = season(state.lat), w = W[state.wx];
@@ -202,7 +215,7 @@ function paint(){
   $('title').textContent = m.title;
   $('sub').textContent = 'Passende Playlists zu ' + WLABEL[state.wx].toLowerCase() + ', ' + T[m.t][0].toLowerCase() + ' und ' + S[m.s][0].toLowerCase() + '.';
   $('mWhere').textContent = state.where + (state.acc ? ' (±'+Math.round(state.acc)+' m)' : '');
-  $('mPlace').textContent = state.preset ? state.preset.name : (state.place ? PLACES[state.place].l : '');
+  $('mPlace').textContent = state.preset ? state.preset.name : (state.place ? PLACES[state.place].l + (state.placeName ? ': '+state.placeName : '') : (state.placeName||''));
   $('mTemp').textContent = state.temp!=null ? Math.round(state.temp)+' °C' : '';
   $('mClock').textContent = new Date().toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'})+' Uhr';
   document.querySelectorAll('.chip').forEach(c=>c.setAttribute('aria-pressed', String((c.dataset.k==='auto')===state.auto && (state.auto || c.dataset.k===state.wx))));
@@ -268,7 +281,17 @@ async function findPlaylists(custom){
     if(state.results.length) msg.textContent=''; else { msg.className='msg err'; msg.textContent='Keine Playlist gefunden. Versuche eine eigene Suche.'; }
   }catch(e){ state.results=head; state.idx=0; showPick(); msg.className='msg err'; msg.textContent=e.message; }
 }
-function showPick(){ const p = state.results[state.idx]; $('plName').textContent = p ? p.name : '–'; $('pickLabel').textContent = p?.preset ? 'Dein Ort' : p?.learned ? 'Gelernt: passt zu deinen Gewohnheiten' : 'Vorschlag'; }
+function showPick(){ const p = state.results[state.idx]; $('plName').textContent = p ? p.name : '–'; $('pickLabel').textContent = p?.preset ? 'Dein Ort' : p?.learned ? 'Gelernt: passt zu deinen Gewohnheiten' : 'Vorschlag'; renderList(); }
+function renderList(){
+  const b=$('plList'); b.textContent='';
+  state.results.slice(0,10).forEach((p,i)=>{
+    const x=document.createElement('button'); x.className='chip'; x.textContent=p.name;
+    x.setAttribute('aria-pressed',String(i===state.idx));
+    x.onclick=()=>{ state.idx=i; showPick(); play(); };
+    b.appendChild(x);
+  });
+}
+function playUri(uri,name){ state.results=[{uri,name,preset:true},...state.results.filter(p=>p.uri!==uri)]; state.idx=0; showPick(); play(); }
 
 async function play(){
   const msg = $('msg'), p = state.results[state.idx];
@@ -317,19 +340,22 @@ function categorize(els){
 }
 const dist=(a,b,c,d)=>{const R=6371e3,r=x=>x*Math.PI/180,h=Math.sin(r(c-a)/2)**2+Math.cos(r(a))*Math.cos(r(c))*Math.sin(r(d-b)/2)**2;return 2*R*Math.asin(Math.sqrt(h));};
 const savedPlaces=()=>{try{return JSON.parse(LS.get('places')||'[]')}catch(e){return[]}};
-async function loadPlace(){
-  state.place=null; state.preset=null;
-  if(!state.gps) return;
-  const sp = savedPlaces().map(p=>({p,d:dist(state.lat,state.lon,p.lat,p.lon)})).filter(x=>x.d<=x.p.r+Math.min(state.acc||0,50)).sort((a,b)=>a.d-b.d)[0];
-  if(sp) state.preset=sp.p;
-  const {lat,lon}=state, rad=Math.round(Math.min(80,Math.max(25,state.acc||30)));
+async function placeAt(lat,lon,acc){
+  const rad=Math.round(Math.min(80,Math.max(25,acc||30)));
   const q=`[out:json][timeout:8];is_in(${lat},${lon})->.a;(area.a[leisure];area.a[amenity];area.a[landuse];area.a[natural];nwr(around:${rad},${lat},${lon})[amenity];nwr(around:${rad},${lat},${lon})[shop];nwr(around:${rad},${lat},${lon})[railway];);out tags 40;`;
   try{
     const ac=new AbortController(), to=setTimeout(()=>ac.abort(),9000);
     const r=await fetch('https://overpass-api.de/api/interpreter?data='+encodeURIComponent(q),{signal:ac.signal});
     clearTimeout(to);
-    state.place=categorize((await r.json()).elements||[]);
-  }catch(e){}
+    return categorize((await r.json()).elements||[]);
+  }catch(e){ return null; }
+}
+async function loadPlace(){
+  state.place=null; state.preset=null; state.placeName=null;
+  if(!state.gps) return;
+  const sp = savedPlaces().map(p=>({p,d:dist(state.lat,state.lon,p.lat,p.lon)})).filter(x=>x.d<=x.p.r+Math.min(state.acc||0,50)).sort((a,b)=>a.d-b.d)[0];
+  if(sp) state.preset=sp.p;
+  state.place=await placeAt(state.lat,state.lon,state.acc);
   if(state.preset?.cat) state.place=state.preset.cat;
 }
 function parseUri(s){
@@ -350,19 +376,25 @@ function renderPlaces(){
 }
 async function savePlace(){
   const m=$('pMsg'), name=$('pName').value.trim(), link=$('pLink').value.trim();
-  m.textContent='Standort wird genau bestimmt …';
-  const c=await getPos();
-  if(!c){ m.textContent='Standort nicht verfügbar. Erlaube den Standortzugriff im Browser.'; return; }
-  state.lat=c.latitude; state.lon=c.longitude; state.acc=c.accuracy; state.gps=true;
-  if(c.accuracy>80){ m.textContent='Der Standort ist noch zu ungenau (±'+Math.round(c.accuracy)+' m). Geh ans Fenster oder nach draußen und versuche es nochmal.'; return; }
+  let lat, lon, acc=0;
+  if(state.pick){ lat=state.pick.lat; lon=state.pick.lon; }
+  else{
+    m.textContent='Standort wird genau bestimmt …';
+    const c=await getPos();
+    if(!c){ m.textContent='Standort nicht verfügbar. Tippe stattdessen den Punkt auf der Karte an.'; return; }
+    state.lat=c.latitude; state.lon=c.longitude; state.acc=c.accuracy; state.gps=true;
+    if(c.accuracy>80){ m.textContent='Der Standort ist zu ungenau (±'+Math.round(c.accuracy)+' m). Tippe den Punkt auf der Karte an oder versuche es draußen nochmal.'; return; }
+    lat=c.latitude; lon=c.longitude; acc=c.accuracy;
+  }
   if(!name){ m.textContent='Gib dem Ort einen Namen.'; return; }
   let uri=null;
   if(link){ uri=parseUri(link); if(!uri){ m.textContent='Link nicht erkannt. In Spotify: Teilen, Link kopieren.'; return; } }
   else if($('pCur').checked){ uri=state.results[state.idx]?.uri||null; if(!uri){ m.textContent='Wähle erst eine Playlist aus.'; return; } }
   const ps=savedPlaces().filter(p=>p.name.toLowerCase()!==name.toLowerCase());
-  ps.push({name,lat:state.lat,lon:state.lon,r:Math.max(30,Math.round(c.accuracy),Number($('pR').value)||100),uri,cat:$('pCat').value||null});
-  LS.set('places',JSON.stringify(ps)); $('pName').value=''; $('pLink').value=''; $('pCur').checked=false;
-  m.textContent='Gespeichert: '+name+' (Genauigkeit ±'+Math.round(c.accuracy)+' m). Gleicher Name = Ort wird neu gesetzt.'; renderPlaces(); refresh(true);
+  ps.push({name,lat,lon,r:Math.max(30,Math.round(acc),Number($('pR').value)||100),uri,cat:$('pCat').value||null});
+  LS.set('places',JSON.stringify(ps)); $('pName').value=''; $('pLink').value=''; $('pCur').checked=false; unpick();
+  m.textContent='Gespeichert: '+name+(acc?' (Genauigkeit ±'+Math.round(acc)+' m)':'')+'. Gleicher Name = Ort wird neu gesetzt.';
+  renderPlaces(); updateMap(false); refresh(true);
 }
 function fillCats(){
   $('pCat').innerHTML='<option value="">Ortstyp automatisch</option>'+Object.entries(PLACES).map(([k,v])=>`<option value="${k}">${v.l}</option>`).join('');
@@ -402,8 +434,134 @@ function learned(){
 }
 const sig=()=>[state.wx,state.place,state.preset?.name,timeOfDay(new Date().getHours())].join();
 async function refresh(force){
-  const b=sig(); await loadWeather(); paint();
+  const b=sig(); await loadWeather(); paint(); updateMap(false); loadNearby();
   if(force||sig()!==b) await findPlaylists();
+}
+
+/* ---------- Karte (Leaflet + OpenStreetMap) ---------- */
+let map, meMark, meCirc, pickMark, placeLayer;
+function initMap(){
+  if(map) return;
+  if(!window.L){ $('mapMsg').textContent='Karte konnte nicht geladen werden (Internet?).'; return; }
+  map=L.map('map').setView([state.lat,state.lon],15);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'}).addTo(map);
+  placeLayer=L.layerGroup().addTo(map);
+  map.on('click',e=>setPick(e.latlng.lat,e.latlng.lng,true));
+  $('mapBox').addEventListener('toggle',()=>setTimeout(()=>map.invalidateSize(),50));
+}
+function updateMap(center){
+  if(!map) return;
+  const ll=[state.lat,state.lon];
+  $('mapMsg').textContent = state.gps ? '' : 'Dein Standort ist noch unbekannt, die Karte zeigt Frankfurt.';
+  if(state.gps){
+    if(!meMark){
+      meCirc=L.circle(ll,{radius:state.acc||20,color:'#2f7de1',weight:1,fillOpacity:.12}).addTo(map);
+      meMark=L.circleMarker(ll,{radius:8,color:'#fff',weight:2,fillColor:'#2f7de1',fillOpacity:1}).addTo(map);
+    }else{ meMark.setLatLng(ll); meCirc.setLatLng(ll).setRadius(state.acc||20); }
+  }
+  if(center) map.setView(ll,16);
+  placeLayer.clearLayers();
+  savedPlaces().forEach(p=>{
+    const c=L.circle([p.lat,p.lon],{radius:p.r,color:'#f2a65a',weight:2,fillOpacity:.15}).addTo(placeLayer);
+    c.bindTooltip(p.name,{permanent:true,direction:'center',className:'ptip'});
+    c.on('click',ev=>{ L.DomEvent.stopPropagation(ev); openPlacePopup(p,[p.lat,p.lon]); });
+  });
+}
+function popupBox(title,sub,btns){
+  const d=document.createElement('div'); d.style.cssText='display:flex;flex-direction:column;gap:8px;min-width:160px;color:#14181f';
+  const t=document.createElement('b'); t.textContent=title; d.appendChild(t);
+  if(sub){ const x=document.createElement('span'); x.textContent=sub; d.appendChild(x); }
+  btns.forEach(([txt,fn])=>{ const b=document.createElement('button'); b.className='chip'; b.style.cssText='color:#14181f;border-color:#999;background:#eee'; b.textContent=txt; b.onclick=fn; d.appendChild(b); });
+  return d;
+}
+function openPlacePopup(p,ll){
+  const btns=[];
+  if(p.uri) btns.push(['Abspielen',()=>{ playUri(p.uri,p.name); map.closePopup(); }]);
+  btns.push(['Ort ändern',()=>{ editPlace(p); map.closePopup(); }]);
+  L.popup().setLatLng(ll).setContent(popupBox(p.name,(p.cat?PLACES[p.cat].l+', ':'')+(p.uri?'feste Playlist':'keine feste Playlist'),btns)).openOn(map);
+}
+function setPick(lat,lon,popup){
+  state.pick={lat,lon};
+  if(map){
+    if(pickMark) pickMark.setLatLng([lat,lon]);
+    else pickMark=L.circleMarker([lat,lon],{radius:9,color:'#fff',weight:2,fillColor:'#f2a65a',fillOpacity:1}).addTo(map);
+  }
+  $('pPick').textContent='Gewählter Punkt: '+lat.toFixed(5)+', '+lon.toFixed(5);
+  $('btnUnpick').classList.remove('hide');
+  if(popup && map) L.popup().setLatLng([lat,lon]).setContent(popupBox('Gewählter Punkt','',[
+    ['Ort hier speichern',()=>{ $('placesBox').open=true; $('pName').focus(); map.closePopup(); }],
+    ['Playlists für diesen Punkt',()=>pointPlaylists(lat,lon)]
+  ])).openOn(map);
+}
+function unpick(){
+  state.pick=null; if(pickMark){ pickMark.remove(); pickMark=null; }
+  $('pPick').textContent='Kein Punkt gewählt, es wird dein aktueller Standort genutzt.'; $('btnUnpick').classList.add('hide');
+}
+function editPlace(p){
+  setPick(p.lat,p.lon,false);
+  $('pName').value=p.name; $('pCat').value=p.cat||''; $('pR').value=p.r; $('pLink').value='';
+  $('placesBox').open=true; $('pMsg').textContent='Ändere die Felder und tippe auf „Diesen Ort speichern“. Der gleiche Name überschreibt den alten Eintrag.';
+}
+async function pointPlaylists(lat,lon){
+  const msg=$('msg'); msg.className='msg'; msg.textContent='Prüfe, was dort ist …'; map.closePopup();
+  const near=savedPlaces().find(p=>dist(lat,lon,p.lat,p.lon)<=p.r);
+  state.preset=near||null;
+  state.place=near?.cat || await placeAt(lat,lon,0);
+  paint(); await findPlaylists();
+  msg.className='msg'; msg.textContent='Vorschläge für den gewählten Punkt'+(state.place?' ('+PLACES[state.place].l+')':'')+'. Das Wetter ist das an deinem Standort.';
+  $('plName').scrollIntoView({behavior:'smooth',block:'center'});
+}
+
+/* ---------- Automatisch erkannte Orte in der Nähe (OpenStreetMap) ---------- */
+let nearLayer;
+function poiGeom(e){
+  if(e.bounds){ const b=e.bounds; return {lat:(b.minlat+b.maxlat)/2, lon:(b.minlon+b.maxlon)/2, r:Math.max(40,Math.min(300,dist(b.minlat,b.minlon,b.maxlat,b.maxlon)/2))}; }
+  if(e.lat!=null) return {lat:e.lat,lon:e.lon,r:50};
+  return null;
+}
+async function loadNearby(force){
+  if(!map||!state.gps) return;
+  const {lat,lon}=state;
+  if(force||!state.nbAt||dist(state.nbAt[0],state.nbAt[1],lat,lon)>=150){
+    const f=(k,v)=>`nwr(around:700,${lat},${lon})[${k}~"^(${v})$"][name];`;
+    const q=`[out:json][timeout:12];(${f('leisure','park|garden|playground|nature_reserve|sports_centre|fitness_centre|stadium|swimming_pool')}${f('railway','station|tram_stop|halt')}${f('amenity','school|university|college|library')}${f('shop','supermarket|mall|department_store')}${f('natural','water|beach')}${f('landuse','forest|cemetery')});out tags bb 150;`;
+    try{
+      const ac=new AbortController(), to=setTimeout(()=>ac.abort(),12000);
+      const r=await fetch('https://overpass-api.de/api/interpreter?data='+encodeURIComponent(q),{signal:ac.signal});
+      clearTimeout(to);
+      const seen=new Set(); state.nearby=[];
+      for(const e of (await r.json()).elements||[]){
+        const cat=categorize([e]), g=poiGeom(e); if(!cat||!g) continue;
+        const k=e.tags.name+cat; if(seen.has(k)) continue; seen.add(k);
+        state.nearby.push({name:e.tags.name,cat,...g});
+      }
+      state.nbAt=[lat,lon];
+    }catch(e){ return; }
+  }
+  const ins=(state.nearby||[]).filter(p=>dist(lat,lon,p.lat,p.lon)<=p.r).sort((a,b)=>a.r-b.r)[0];
+  state.placeName=ins?ins.name:null;
+  drawNearby(); paint();
+}
+function drawNearby(){
+  if(!map) return;
+  if(!nearLayer) nearLayer=L.layerGroup().addTo(map);
+  nearLayer.clearLayers();
+  (state.nearby||[]).forEach(p=>{
+    const m=L.circleMarker([p.lat,p.lon],{radius:7,color:'#fff',weight:2,fillColor:'#3fa66b',fillOpacity:.95}).addTo(nearLayer);
+    m.bindTooltip(p.name);
+    m.on('click',ev=>{
+      L.DomEvent.stopPropagation(ev);
+      L.popup().setLatLng([p.lat,p.lon]).setContent(popupBox(p.name,PLACES[p.cat].l,[
+        ['Playlists dafür',()=>catPlaylists(p)],
+        ['Playlist festlegen',()=>{ editPlace({name:p.name,lat:p.lat,lon:p.lon,r:Math.round(p.r),cat:p.cat}); map.closePopup(); }]
+      ])).openOn(map);
+    });
+  });
+}
+async function catPlaylists(p){
+  map.closePopup(); state.preset=null; state.place=p.cat; paint(); await findPlaylists();
+  $('msg').className='msg'; $('msg').textContent='Vorschläge für '+p.name+' ('+PLACES[p.cat].l+').';
+  $('plName').scrollIntoView({behavior:'smooth',block:'center'});
 }
 
 /* ---------- Start ---------- */
@@ -420,7 +578,8 @@ async function init(){
   $('btnUp').onclick = ()=>{ learn(state.results[state.idx],2); $('msg').className='msg'; $('msg').textContent='Gemerkt: Das passt hier.'; };
   $('btnDown').onclick = ()=>{ learn(state.results[state.idx],-3); $('btnOther').click(); };
   $('btnHome').onclick = ()=>{ $('pName').value='Zuhause'; $('pCat').value='zuhause'; $('pName').focus(); };
-  $('btnSavePlace').onclick = savePlace; $('btnExport').onclick = exportAll; $('btnImport').onclick = importAll;
+  $('btnSavePlace').onclick = savePlace; $('btnUnpick').onclick = unpick;
+  $('btnLocate').onclick = ()=>{ refresh(false).then(()=>updateMap(true)); }; $('btnExport').onclick = exportAll; $('btnImport').onclick = importAll;
   const run = ()=>{ const v=$('custom').value.trim(); if(v) findPlaylists(v); };
   $('btnCustom').onclick = run; $('custom').onkeydown = e=>{ if(e.key==='Enter') run(); };
 
@@ -434,8 +593,8 @@ async function init(){
   }
   if(!(await token())){ showLogin(); return; }
 
-  showApp(); buildChips(); fillCats(); renderPlaces(); paint();
-  await loadWeather(); paint();
+  showApp(); buildChips(); fillCats(); renderPlaces(); initMap(); paint();
+  await loadWeather(); paint(); updateMap(true); loadNearby();
   await findPlaylists();
   setInterval(paint, 60000); setInterval(()=>refresh(false), 600000);
 }
