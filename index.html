@@ -53,6 +53,7 @@ select.q option{color:#14181f}
 #map{height:min(55vh,360px);border-radius:14px;overflow:hidden;z-index:0}
 .leaflet-container{font:inherit}
 .leaflet-tooltip.ptip{background:rgba(20,24,31,.85);color:#fff;border:0;box-shadow:none;font-weight:600}
+.lbl{font-size:14px;color:var(--ink2);margin-bottom:-14px}
 .prow{display:flex;justify-content:space-between;align-items:center;gap:10px}
 .box small{color:var(--ink2);font-size:14px}
 @media (prefers-reduced-motion:reduce){body{transition:none}}
@@ -77,6 +78,8 @@ select.q option{color:#14181f}
     </div>
 
     <div class="chips" id="chips" role="group" aria-label="Wetter wählen"></div>
+    <small class="lbl">Ich bin gerade …</small>
+    <div class="chips" id="actChips" role="group" aria-label="Wo oder was machst du gerade?"></div>
 
     <div class="now">
       <div><small id="pickLabel">Vorschlag</small><br><b id="plName">–</b></div>
@@ -138,7 +141,7 @@ select.q option{color:#14181f}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script>
 // ====== HIER DEINE CLIENT-ID VON developer.spotify.com EINTRAGEN ======
-const CLIENT_ID = '85cc4bedbc1e43219fe1f285a3c7299a';
+const CLIENT_ID = 'D85cc4bedbc1e43219fe1f285a3c7299a';
 // ======================================================================
 
 const REDIRECT = location.origin + location.pathname;
@@ -226,7 +229,7 @@ function paint(){
   $('title').textContent = m.title;
   $('sub').textContent = 'Passende Playlists zu ' + WLABEL[state.wx].toLowerCase() + ', ' + T[m.t][0].toLowerCase() + ' und ' + S[m.s][0].toLowerCase() + '.';
   $('mWhere').textContent = state.where + (state.acc ? ' (±'+Math.round(state.acc)+' m)' : '');
-  $('mPlace').textContent = state.preset ? state.preset.name : (state.place ? PLACES[state.place].l + (state.placeName ? ': '+state.placeName : '') : (state.placeName||''));
+  $('mPlace').textContent = state.manual ? PLACES[state.manual].l+' (manuell)' : state.preset ? state.preset.name : (state.place ? PLACES[state.place].l + (state.placeName ? ': '+state.placeName : '') : (state.placeName||''));
   $('mTemp').textContent = state.temp!=null ? Math.round(state.temp)+' °C' : '';
   $('mClock').textContent = new Date().toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'})+' Uhr';
   document.querySelectorAll('.chip').forEach(c=>c.setAttribute('aria-pressed', String((c.dataset.k==='auto')===state.auto && (state.auto || c.dataset.k===state.wx))));
@@ -363,6 +366,8 @@ async function placeAt(lat,lon,acc){
 }
 async function loadPlace(){
   state.place=null; state.preset=null; state.placeName=null;
+  if(state.manual && Date.now()-state.manualTs>108e5){ setManual(null); buildAct(); }
+  if(state.manual){ state.place=state.manual; return; }
   if(!state.gps) return;
   const sp = savedPlaces().map(p=>({p,d:dist(state.lat,state.lon,p.lat,p.lon)})).filter(x=>x.d<=x.p.r+Math.min(state.acc||0,50)).sort((a,b)=>a.d-b.d)[0];
   if(sp) state.preset=sp.p;
@@ -605,7 +610,7 @@ async function loadNearby(force){
     }catch(e){ return; }
   }
   const ins=(state.nearby||[]).filter(p=>dist(lat,lon,p.lat,p.lon)<=p.r).sort((a,b)=>a.r-b.r)[0];
-  state.placeName=ins?ins.name:null;
+  state.placeName=(!state.manual&&ins)?ins.name:null;
   drawNearby(); paint();
 }
 function drawNearby(){
@@ -628,6 +633,30 @@ async function catPlaylists(p){
   map.closePopup(); state.preset=null; state.place=p.cat; paint(); await findPlaylists();
   $('msg').className='msg'; $('msg').textContent='Vorschläge für '+p.name+' ('+PLACES[p.cat].l+').';
   $('plName').scrollIntoView({behavior:'smooth',block:'center'});
+}
+
+/* ---------- Manuell festlegen, was du gerade machst ---------- */
+function setManual(k){
+  state.manual=k||null; state.manualTs=Date.now();
+  if(k) LS.set('manual',JSON.stringify({k,ts:state.manualTs})); else LS.del('manual');
+}
+function readManual(){
+  try{ const m=JSON.parse(LS.get('manual')||'null'); if(m&&PLACES[m.k]&&Date.now()-m.ts<108e5){ state.manual=m.k; state.manualTs=m.ts; } }catch(e){}
+}
+function buildAct(){
+  const box=$('actChips'); box.textContent='';
+  const order=['sport','arbeit','schule','zuhause','park','wald','wasser','cafe','bar','shop','bahn','ruhe'];
+  const mk=(k,l)=>{
+    const b=document.createElement('button'); b.className='chip'; b.textContent=l;
+    b.setAttribute('aria-pressed',String(k==='auto' ? !state.manual : state.manual===k));
+    b.onclick=async()=>{
+      setManual(k==='auto'?null:k); buildAct();
+      await loadPlace(); loadNearby(); paint(); await findPlaylists();
+    };
+    box.appendChild(b);
+  };
+  mk('auto','Automatisch');
+  order.forEach(k=>mk(k,PLACES[k].l));
 }
 
 /* ---------- Start ---------- */
@@ -661,7 +690,7 @@ async function init(){
   }
   if(!(await token())){ showLogin(); return; }
 
-  showApp(); buildChips(); fillCats(); renderPlaces(); renderTypes(); renderDraft(); initMap(); paint();
+  showApp(); readManual(); buildChips(); buildAct(); fillCats(); renderPlaces(); renderTypes(); renderDraft(); initMap(); paint();
   await loadWeather(); paint(); updateMap(true); loadNearby();
   await findPlaylists();
   setInterval(paint, 60000); setInterval(()=>refresh(false), 600000);
