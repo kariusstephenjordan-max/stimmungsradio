@@ -37,7 +37,7 @@ button.btn{font:inherit;font-weight:600;font-size:17px;border:0;border-radius:14
 button.btn.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
 button.btn.big{flex:1 1 100%;font-size:19px;padding:17px}
 button:focus-visible{outline:3px solid #fff;outline-offset:2px}
-input.q{font:inherit;font-size:16px;flex:1;min-width:0;color:var(--ink);background:var(--glass);border:1px solid var(--line);border-radius:14px;padding:12px 14px}
+input.q,select.q{font:inherit;font-size:16px;flex:1;min-width:0;color:var(--ink);background:var(--glass);border:1px solid var(--line);border-radius:14px;padding:12px 14px}
 input.q::placeholder{color:var(--ink2)}
 .msg{font-size:15px;color:var(--ink2);min-height:1.4em}
 .msg.err{color:#ffd0c8}
@@ -47,6 +47,8 @@ input.q::placeholder{color:var(--ink2)}
 details.box{background:var(--glass);border:1px solid var(--line);border-radius:20px;padding:18px}
 details.box summary{cursor:pointer;font-weight:600;font-size:17px}
 details.box>div{display:flex;flex-direction:column;gap:12px;margin-top:14px}
+.chk{font-size:15px;color:var(--ink2);display:flex;gap:8px;align-items:center}
+select.q option{color:#14181f}
 .prow{display:flex;justify-content:space-between;align-items:center;gap:10px}
 .box small{color:var(--ink2);font-size:14px}
 @media (prefers-reduced-motion:reduce){body{transition:none}}
@@ -91,10 +93,13 @@ details.box>div{display:flex;flex-direction:column;gap:12px;margin-top:14px}
     </div>
 
     <details class="box"><summary>Meine Orte</summary><div>
-      <small>Speichere den Ort, an dem du gerade bist, mit einer festen Playlist. Dort spielt die App künftig immer diese.</small>
+      <small>Stelle dich an den Ort und speichere ihn, z. B. als Zuhause. Du kannst ihm eine feste Playlist zuordnen oder nur den Ortstyp festlegen, dann richtet die App ihre Vorschläge danach aus.</small>
       <div id="placeList"></div>
+      <div class="row"><button class="btn ghost" id="btnHome">Das ist mein Zuhause</button></div>
       <input class="q" id="pName" placeholder="Name, z. B. Zuhause">
-      <input class="q" id="pLink" placeholder="Spotify-Link (leer = aktuelle Playlist)">
+      <select class="q" id="pCat" aria-label="Ortstyp"></select>
+      <input class="q" id="pLink" placeholder="Spotify-Link (optional)">
+      <label class="chk"><input type="checkbox" id="pCur"> Aktuelle Playlist fest zuordnen</label>
       <div class="row"><input class="q" id="pR" type="number" min="30" value="100" aria-label="Radius in Metern"><button class="btn" id="btnSavePlace">Diesen Ort speichern</button></div>
       <small>Die Zahl ist der Radius in Metern.</small>
       <div class="row"><button class="btn ghost" id="btnExport">Einstellungen kopieren</button><button class="btn ghost" id="btnImport">Einstellungen einfügen</button></div>
@@ -239,7 +244,7 @@ async function search(q){
 }
 async function findPlaylists(custom){
   const msg = $('msg'); msg.className='msg'; msg.textContent='Suche passende Playlists …';
-  const raw = custom ? [] : [...(state.preset?[{uri:state.preset.uri,name:state.preset.name+' (dein Ort)',preset:true}]:[]), ...learned()];
+  const raw = custom ? [] : [...(state.preset?.uri?[{uri:state.preset.uri,name:state.preset.name+' (dein Ort)',preset:true}]:[]), ...learned()];
   const head = [...new Map(raw.map(p=>[p.uri,p])).values()];
   const list = custom ? [custom] : mood().queries;
   try{
@@ -279,7 +284,8 @@ const PLACES = {
   shop:{l:'Einkaufen',q:['shopping upbeat','feel good pop']},
   bahn:{l:'Bahnhof / unterwegs',q:['commute playlist','road trip']},
   ruhe:{l:'Ruhiger Ort',q:['calm ambient','peaceful piano']},
-  arbeit:{l:'Büro',q:['deep focus','work focus']}
+  arbeit:{l:'Büro',q:['deep focus','work focus']},
+  zuhause:{l:'Zuhause',q:['cozy home chill','at home relax']}
 };
 function categorize(els){
   const has=(k,vs)=>els.some(e=>e.tags&&e.tags[k]&&(vs===true||vs.includes(e.tags[k])));
@@ -311,6 +317,7 @@ async function loadPlace(){
     clearTimeout(to);
     state.place=categorize((await r.json()).elements||[]);
   }catch(e){}
+  if(state.preset?.cat) state.place=state.preset.cat;
 }
 function parseUri(s){
   s=s.trim(); const m=s.match(/open\.spotify\.com\/(?:intl-[a-z]+\/)?(playlist|album|artist)\/([A-Za-z0-9]+)/);
@@ -322,7 +329,7 @@ function renderPlaces(){
   if(!ps.length){ box.innerHTML='<small>Noch keine Orte gespeichert.</small>'; return; }
   ps.forEach((p,i)=>{
     const d=document.createElement('div'); d.className='prow';
-    const t=document.createElement('span'); t.textContent=p.name+' ('+p.r+' m)'; d.appendChild(t);
+    const t=document.createElement('span'); t.textContent=p.name+' ('+p.r+' m'+(p.uri?', feste Playlist':'')+(p.cat?', '+PLACES[p.cat].l:'')+')'; d.appendChild(t);
     const b=document.createElement('button'); b.className='chip'; b.textContent='Löschen';
     b.onclick=()=>{ ps.splice(i,1); LS.set('places',JSON.stringify(ps)); renderPlaces(); refresh(true); };
     d.appendChild(b); box.appendChild(d);
@@ -332,10 +339,16 @@ function savePlace(){
   const m=$('pMsg'), name=$('pName').value.trim(), link=$('pLink').value.trim();
   if(!state.gps){ m.textContent='Standort nicht verfügbar. Erlaube den Standortzugriff im Browser.'; return; }
   if(!name){ m.textContent='Gib dem Ort einen Namen.'; return; }
-  const uri = link ? parseUri(link) : state.results[state.idx]?.uri;
-  if(!uri){ m.textContent = link ? 'Link nicht erkannt. In Spotify: Teilen, Link kopieren.' : 'Wähle erst eine Playlist aus oder füge einen Link ein.'; return; }
-  const ps=savedPlaces(); ps.push({name,lat:state.lat,lon:state.lon,r:Math.max(30,Number($('pR').value)||100),uri});
-  LS.set('places',JSON.stringify(ps)); $('pName').value=''; $('pLink').value=''; m.textContent='Gespeichert.'; renderPlaces(); refresh(true);
+  let uri=null;
+  if(link){ uri=parseUri(link); if(!uri){ m.textContent='Link nicht erkannt. In Spotify: Teilen, Link kopieren.'; return; } }
+  else if($('pCur').checked){ uri=state.results[state.idx]?.uri||null; if(!uri){ m.textContent='Wähle erst eine Playlist aus.'; return; } }
+  const ps=savedPlaces().filter(p=>p.name.toLowerCase()!==name.toLowerCase());
+  ps.push({name,lat:state.lat,lon:state.lon,r:Math.max(30,Number($('pR').value)||100),uri,cat:$('pCat').value||null});
+  LS.set('places',JSON.stringify(ps)); $('pName').value=''; $('pLink').value=''; $('pCur').checked=false;
+  m.textContent='Gespeichert: '+name+'. Gleicher Name = Ort wird neu gesetzt.'; renderPlaces(); refresh(true);
+}
+function fillCats(){
+  $('pCat').innerHTML='<option value="">Ortstyp automatisch</option>'+Object.entries(PLACES).map(([k,v])=>`<option value="${k}">${v.l}</option>`).join('');
 }
 async function exportAll(){
   const s=JSON.stringify({places:savedPlaces(),hist:hist()});
@@ -354,7 +367,7 @@ function importAll(){
 /* Lernen: Jede Wiedergabe und jedes Feedback wird mit dem Kontext gespeichert.
    Playlists, die in ähnlichem Kontext (Ort, Tageszeit, Wochenende, Wetter, Jahreszeit)
    gut ankamen, werden zuerst vorgeschlagen. Ältere Einträge zählen weniger. */
-const ctxNow=()=>({t:timeOfDay(new Date().getHours()),we:[0,6].includes(new Date().getDay()),wx:state.wx,pl:state.place,s:season(state.lat)});
+const ctxNow=()=>({t:timeOfDay(new Date().getHours()),we:[0,6].includes(new Date().getDay()),wx:state.wx,pl:state.preset?'saved:'+state.preset.name:state.place,s:season(state.lat)});
 const hist=()=>{try{return JSON.parse(LS.get('hist')||'[]')}catch(e){return[]}};
 function learn(p,v){
   if(!p) return;
@@ -389,6 +402,7 @@ async function init(){
   $('btnNext').onclick = ()=>ctl('/me/player/next','POST');
   $('btnUp').onclick = ()=>{ learn(state.results[state.idx],2); $('msg').className='msg'; $('msg').textContent='Gemerkt: Das passt hier.'; };
   $('btnDown').onclick = ()=>{ learn(state.results[state.idx],-3); $('btnOther').click(); };
+  $('btnHome').onclick = ()=>{ $('pName').value='Zuhause'; $('pCat').value='zuhause'; $('pName').focus(); };
   $('btnSavePlace').onclick = savePlace; $('btnExport').onclick = exportAll; $('btnImport').onclick = importAll;
   const run = ()=>{ const v=$('custom').value.trim(); if(v) findPlaylists(v); };
   $('btnCustom').onclick = run; $('custom').onkeydown = e=>{ if(e.key==='Enter') run(); };
@@ -403,7 +417,7 @@ async function init(){
   }
   if(!(await token())){ showLogin(); return; }
 
-  showApp(); buildChips(); renderPlaces(); paint();
+  showApp(); buildChips(); fillCats(); renderPlaces(); paint();
   await loadWeather(); paint();
   await findPlaylists();
   setInterval(paint, 60000); setInterval(()=>refresh(false), 600000);
