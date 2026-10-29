@@ -114,6 +114,7 @@ select.q option{color:#14181f}
 <script>
 // ====== HIER DEINE CLIENT-ID VON developer.spotify.com EINTRAGEN ======
 const CLIENT_ID = '85cc4bedbc1e43219fe1f285a3c7299a';
+
 // ======================================================================
 
 const REDIRECT = location.origin + location.pathname;
@@ -200,7 +201,7 @@ function paint(){
   r.setProperty('--sky2', dark ? '#0d1017' : b);
   $('title').textContent = m.title;
   $('sub').textContent = 'Passende Playlists zu ' + WLABEL[state.wx].toLowerCase() + ', ' + T[m.t][0].toLowerCase() + ' und ' + S[m.s][0].toLowerCase() + '.';
-  $('mWhere').textContent = state.where;
+  $('mWhere').textContent = state.where + (state.acc ? ' (±'+Math.round(state.acc)+' m)' : '');
   $('mPlace').textContent = state.preset ? state.preset.name : (state.place ? PLACES[state.place].l : '');
   $('mTemp').textContent = state.temp!=null ? Math.round(state.temp)+' °C' : '';
   $('mClock').textContent = new Date().toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'})+' Uhr';
@@ -221,13 +222,25 @@ function buildChips(){
 function getPos(){
   return new Promise(res=>{
     if(!navigator.geolocation) return res(null);
-    navigator.geolocation.getCurrentPosition(p=>res(p.coords),()=>res(null),{timeout:8000,maximumAge:600000});
+    let best=null, done=false, id, to;
+    const fin=()=>{ if(done) return; done=true; navigator.geolocation.clearWatch(id); clearTimeout(to); res(best); };
+    id=navigator.geolocation.watchPosition(p=>{
+      if(!best||p.coords.accuracy<best.accuracy) best=p.coords;
+      if(best.accuracy<=25) fin();
+    },err=>{ state.geoErr=err.code; fin(); },{enableHighAccuracy:true,maximumAge:0,timeout:15000});
+    to=setTimeout(fin,12000);
   });
 }
 async function loadWeather(){
+  state.geoErr=0;
   const c = await getPos();
-  state.gps = !!c;
+  state.gps = !!c; state.acc = c ? c.accuracy : null;
   if(c){ state.lat=c.latitude; state.lon=c.longitude; state.where='Dein Standort'; }
+  else{
+    if(state.where==='Dein Standort') state.where='Letzter Standort';
+    $('msg').className='msg err';
+    $('msg').textContent = state.geoErr===1 ? 'Standortzugriff blockiert. Erlaube ihn in den Browser-Einstellungen für diese Seite und tippe auf „Standort neu prüfen“.' : 'Standort nicht gefunden. Geh ans Fenster oder nach draußen und tippe auf „Standort neu prüfen“.';
+  }
   await loadPlace();
   try{
     const r = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${state.lat}&longitude=${state.lon}&current=temperature_2m,weather_code`);
@@ -307,10 +320,10 @@ const savedPlaces=()=>{try{return JSON.parse(LS.get('places')||'[]')}catch(e){re
 async function loadPlace(){
   state.place=null; state.preset=null;
   if(!state.gps) return;
-  const sp = savedPlaces().map(p=>({p,d:dist(state.lat,state.lon,p.lat,p.lon)})).filter(x=>x.d<=x.p.r).sort((a,b)=>a.d-b.d)[0];
+  const sp = savedPlaces().map(p=>({p,d:dist(state.lat,state.lon,p.lat,p.lon)})).filter(x=>x.d<=x.p.r+Math.min(state.acc||0,50)).sort((a,b)=>a.d-b.d)[0];
   if(sp) state.preset=sp.p;
-  const {lat,lon}=state;
-  const q=`[out:json][timeout:8];is_in(${lat},${lon})->.a;(area.a[leisure];area.a[amenity];area.a[landuse];area.a[natural];nwr(around:30,${lat},${lon})[amenity];nwr(around:30,${lat},${lon})[shop];nwr(around:30,${lat},${lon})[railway];);out tags 40;`;
+  const {lat,lon}=state, rad=Math.round(Math.min(80,Math.max(25,state.acc||30)));
+  const q=`[out:json][timeout:8];is_in(${lat},${lon})->.a;(area.a[leisure];area.a[amenity];area.a[landuse];area.a[natural];nwr(around:${rad},${lat},${lon})[amenity];nwr(around:${rad},${lat},${lon})[shop];nwr(around:${rad},${lat},${lon})[railway];);out tags 40;`;
   try{
     const ac=new AbortController(), to=setTimeout(()=>ac.abort(),9000);
     const r=await fetch('https://overpass-api.de/api/interpreter?data='+encodeURIComponent(q),{signal:ac.signal});
@@ -335,17 +348,21 @@ function renderPlaces(){
     d.appendChild(b); box.appendChild(d);
   });
 }
-function savePlace(){
+async function savePlace(){
   const m=$('pMsg'), name=$('pName').value.trim(), link=$('pLink').value.trim();
-  if(!state.gps){ m.textContent='Standort nicht verfügbar. Erlaube den Standortzugriff im Browser.'; return; }
+  m.textContent='Standort wird genau bestimmt …';
+  const c=await getPos();
+  if(!c){ m.textContent='Standort nicht verfügbar. Erlaube den Standortzugriff im Browser.'; return; }
+  state.lat=c.latitude; state.lon=c.longitude; state.acc=c.accuracy; state.gps=true;
+  if(c.accuracy>80){ m.textContent='Der Standort ist noch zu ungenau (±'+Math.round(c.accuracy)+' m). Geh ans Fenster oder nach draußen und versuche es nochmal.'; return; }
   if(!name){ m.textContent='Gib dem Ort einen Namen.'; return; }
   let uri=null;
   if(link){ uri=parseUri(link); if(!uri){ m.textContent='Link nicht erkannt. In Spotify: Teilen, Link kopieren.'; return; } }
   else if($('pCur').checked){ uri=state.results[state.idx]?.uri||null; if(!uri){ m.textContent='Wähle erst eine Playlist aus.'; return; } }
   const ps=savedPlaces().filter(p=>p.name.toLowerCase()!==name.toLowerCase());
-  ps.push({name,lat:state.lat,lon:state.lon,r:Math.max(30,Number($('pR').value)||100),uri,cat:$('pCat').value||null});
+  ps.push({name,lat:state.lat,lon:state.lon,r:Math.max(30,Math.round(c.accuracy),Number($('pR').value)||100),uri,cat:$('pCat').value||null});
   LS.set('places',JSON.stringify(ps)); $('pName').value=''; $('pLink').value=''; $('pCur').checked=false;
-  m.textContent='Gespeichert: '+name+'. Gleicher Name = Ort wird neu gesetzt.'; renderPlaces(); refresh(true);
+  m.textContent='Gespeichert: '+name+' (Genauigkeit ±'+Math.round(c.accuracy)+' m). Gleicher Name = Ort wird neu gesetzt.'; renderPlaces(); refresh(true);
 }
 function fillCats(){
   $('pCat').innerHTML='<option value="">Ortstyp automatisch</option>'+Object.entries(PLACES).map(([k,v])=>`<option value="${k}">${v.l}</option>`).join('');
