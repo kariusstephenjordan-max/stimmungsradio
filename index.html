@@ -104,6 +104,15 @@ select.q option{color:#14181f}
       <div class="msg" id="mapMsg"></div>
     </div></details>
 
+    <details class="box" id="typesBox"><summary>Voreinstellung nach Ortstyp</summary><div>
+      <small>Playlists, die an jedem Park, Bahnhof usw. automatisch zuerst vorgeschlagen werden, auch ohne dass du den Ort speicherst. Mehrere pro Typ möglich.</small>
+      <select class="q" id="tCat" aria-label="Ortstyp"></select>
+      <div class="row"><input class="q" id="tLink" placeholder="Spotify-Link einfügen"><button class="btn ghost" id="btnTAdd">Hinzufügen</button></div>
+      <button class="btn ghost" id="btnTCur">Aktuelle Playlist hinzufügen</button>
+      <div id="typeList"></div>
+      <div class="msg" id="tMsg"></div>
+    </div></details>
+
     <details class="box" id="placesBox"><summary>Meine Orte</summary><div>
       <small>Stelle dich an den Ort und speichere ihn, z. B. als Zuhause. Du kannst ihm eine feste Playlist zuordnen oder nur den Ortstyp festlegen, dann richtet die App ihre Vorschläge danach aus.</small>
       <div id="placeList"></div>
@@ -111,8 +120,10 @@ select.q option{color:#14181f}
       <div class="row"><button class="btn ghost" id="btnHome">Das ist mein Zuhause</button></div>
       <input class="q" id="pName" placeholder="Name, z. B. Zuhause">
       <select class="q" id="pCat" aria-label="Ortstyp"></select>
-      <input class="q" id="pLink" placeholder="Spotify-Link (optional)">
-      <label class="chk"><input type="checkbox" id="pCur"> Aktuelle Playlist fest zuordnen</label>
+      <div class="row"><input class="q" id="pLink" placeholder="Spotify-Link einfügen"><button class="btn ghost" id="btnAddLink">Hinzufügen</button></div>
+      <button class="btn ghost" id="btnAddCur">Aktuelle Playlist hinzufügen</button>
+      <div class="chips" id="pDraft" aria-label="Playlists dieses Ortes"></div>
+      <small>Du kannst pro Ort mehrere Playlists hinzufügen. Antippen entfernt eine.</small>
       <div class="row"><input class="q" id="pR" type="number" min="30" value="100" aria-label="Radius in Metern"><button class="btn" id="btnSavePlace">Diesen Ort speichern</button></div>
       <small>Die Zahl ist der Radius in Metern.</small>
       <div class="row"><button class="btn ghost" id="btnExport">Einstellungen kopieren</button><button class="btn ghost" id="btnImport">Einstellungen einfügen</button></div>
@@ -196,7 +207,7 @@ function season(lat){
   return m>=2&&m<=4?'spring': m>=5&&m<=7?'summer': m>=8&&m<=10?'autumn':'winter';
 }
 
-let state = {lat:50.11, lon:8.68, where:'Frankfurt (Standard)', wx:'cloud', auto:true, temp:null, results:[], idx:0, queryUsed:'', gps:false, place:null, preset:null, pick:null};
+let state = {lat:50.11, lon:8.68, where:'Frankfurt (Standard)', wx:'cloud', auto:true, temp:null, results:[], idx:0, queryUsed:'', gps:false, place:null, preset:null, pick:null, draft:[]};
 
 function mood(){
   const t = timeOfDay(new Date().getHours()), s = season(state.lat), w = W[state.wx];
@@ -270,7 +281,7 @@ async function search(q){
 }
 async function findPlaylists(custom){
   const msg = $('msg'); msg.className='msg'; msg.textContent='Suche passende Playlists …';
-  const raw = custom ? [] : [...(state.preset?.uri?[{uri:state.preset.uri,name:state.preset.name+' (dein Ort)',preset:true}]:[]), ...learned()];
+  const raw = custom ? [] : [...placeLists(state.preset||{}).map(l=>({...l,preset:true})).sort(()=>Math.random()-.5), ...typeLists(state.place), ...learned()];
   const head = [...new Map(raw.map(p=>[p.uri,p])).values()];
   const list = custom ? [custom] : mood().queries;
   try{
@@ -281,7 +292,7 @@ async function findPlaylists(custom){
     if(state.results.length) msg.textContent=''; else { msg.className='msg err'; msg.textContent='Keine Playlist gefunden. Versuche eine eigene Suche.'; }
   }catch(e){ state.results=head; state.idx=0; showPick(); msg.className='msg err'; msg.textContent=e.message; }
 }
-function showPick(){ const p = state.results[state.idx]; $('plName').textContent = p ? p.name : '–'; $('pickLabel').textContent = p?.preset ? 'Dein Ort' : p?.learned ? 'Gelernt: passt zu deinen Gewohnheiten' : 'Vorschlag'; renderList(); }
+function showPick(){ const p = state.results[state.idx]; $('plName').textContent = p ? p.name : '–'; $('pickLabel').textContent = p?.preset ? 'Dein Ort' : p?.kind==='type' ? 'Voreinstellung für diesen Ortstyp' : p?.learned ? 'Gelernt: passt zu deinen Gewohnheiten' : 'Vorschlag'; renderList(); }
 function renderList(){
   const b=$('plList'); b.textContent='';
   state.results.slice(0,10).forEach((p,i)=>{
@@ -368,11 +379,60 @@ function renderPlaces(){
   if(!ps.length){ box.innerHTML='<small>Noch keine Orte gespeichert.</small>'; return; }
   ps.forEach((p,i)=>{
     const d=document.createElement('div'); d.className='prow';
-    const t=document.createElement('span'); t.textContent=p.name+' ('+p.r+' m'+(p.uri?', feste Playlist':'')+(p.cat?', '+PLACES[p.cat].l:'')+')'; d.appendChild(t);
+    const t=document.createElement('span'); t.textContent=p.name+' ('+p.r+' m'+(placeLists(p).length?', '+placeLists(p).length+' Playlist(s)':'')+(p.cat?', '+PLACES[p.cat].l:'')+')'; d.appendChild(t);
     const b=document.createElement('button'); b.className='chip'; b.textContent='Löschen';
     b.onclick=()=>{ ps.splice(i,1); LS.set('places',JSON.stringify(ps)); renderPlaces(); refresh(true); };
     d.appendChild(b); box.appendChild(d);
   });
+}
+const placeLists=p=>p.lists||(p.uri?[{uri:p.uri,name:p.name}]:[]);
+const typeMap=()=>{try{return JSON.parse(LS.get('types')||'{}')}catch(e){return{}}};
+const typeLists=cat=>(typeMap()[cat]||[]).map(l=>({...l,kind:'type'}));
+async function uriName(uri){
+  const [,t,id]=uri.split(':');
+  try{ return (await api(`/${t}s/${id}?fields=name`)).name || 'Playlist'; }
+  catch(e){ return t==='playlist'?'Playlist':t==='album'?'Album':'Künstler'; }
+}
+function renderDraft(){
+  const b=$('pDraft'); b.textContent='';
+  state.draft.forEach((l,i)=>{
+    const x=document.createElement('button'); x.className='chip'; x.textContent=l.name+' ×'; x.setAttribute('aria-label',l.name+' entfernen');
+    x.onclick=()=>{ state.draft.splice(i,1); renderDraft(); }; b.appendChild(x);
+  });
+}
+async function addDraftLink(){
+  const m=$('pMsg'), u=parseUri($('pLink').value);
+  if(!u){ m.textContent='Link nicht erkannt. In Spotify: Teilen, Link kopieren.'; return; }
+  if(!state.draft.some(l=>l.uri===u)) state.draft.push({uri:u,name:await uriName(u)});
+  $('pLink').value=''; m.textContent=''; renderDraft();
+}
+function addDraftCur(){
+  const c=state.results[state.idx];
+  if(!c){ $('pMsg').textContent='Wähle erst eine Playlist aus.'; return; }
+  if(!state.draft.some(l=>l.uri===c.uri)) state.draft.push({uri:c.uri,name:c.name});
+  $('pMsg').textContent=''; renderDraft();
+}
+function renderTypes(){
+  const box=$('typeList'), t=typeMap(); box.textContent='';
+  const keys=Object.keys(t).filter(k=>PLACES[k]&&t[k].length);
+  if(!keys.length){ box.innerHTML='<small>Noch nichts voreingestellt.</small>'; return; }
+  keys.forEach(k=>{
+    const d=document.createElement('div'), h=document.createElement('b'), row=document.createElement('div');
+    h.textContent=PLACES[k].l; row.className='chips'; d.appendChild(h);
+    t[k].forEach((l,i)=>{
+      const x=document.createElement('button'); x.className='chip'; x.textContent=l.name+' ×';
+      x.onclick=()=>{ t[k].splice(i,1); LS.set('types',JSON.stringify(t)); renderTypes(); }; row.appendChild(x);
+    });
+    d.appendChild(row); box.appendChild(d);
+  });
+}
+async function addType(fromCur){
+  const m=$('tMsg'), cat=$('tCat').value; let uri, name;
+  if(fromCur){ const c=state.results[state.idx]; if(!c){ m.textContent='Wähle erst eine Playlist aus.'; return; } uri=c.uri; name=c.name; }
+  else{ uri=parseUri($('tLink').value); if(!uri){ m.textContent='Link nicht erkannt. In Spotify: Teilen, Link kopieren.'; return; } name=await uriName(uri); }
+  const t=typeMap(); t[cat]=t[cat]||[]; if(!t[cat].some(l=>l.uri===uri)) t[cat].push({uri,name});
+  LS.set('types',JSON.stringify(t)); $('tLink').value='';
+  m.textContent='Hinzugefügt: '+name+' für '+PLACES[cat].l+'. Gilt ab dem nächsten Vorschlag.'; renderTypes();
 }
 async function savePlace(){
   const m=$('pMsg'), name=$('pName').value.trim(), link=$('pLink').value.trim();
@@ -387,20 +447,24 @@ async function savePlace(){
     lat=c.latitude; lon=c.longitude; acc=c.accuracy;
   }
   if(!name){ m.textContent='Gib dem Ort einen Namen.'; return; }
-  let uri=null;
-  if(link){ uri=parseUri(link); if(!uri){ m.textContent='Link nicht erkannt. In Spotify: Teilen, Link kopieren.'; return; } }
-  else if($('pCur').checked){ uri=state.results[state.idx]?.uri||null; if(!uri){ m.textContent='Wähle erst eine Playlist aus.'; return; } }
+  if(link){
+    const u=parseUri(link);
+    if(!u){ m.textContent='Link nicht erkannt. In Spotify: Teilen, Link kopieren.'; return; }
+    if(!state.draft.some(l=>l.uri===u)) state.draft.push({uri:u,name:await uriName(u)});
+  }
   const ps=savedPlaces().filter(p=>p.name.toLowerCase()!==name.toLowerCase());
-  ps.push({name,lat,lon,r:Math.max(30,Math.round(acc),Number($('pR').value)||100),uri,cat:$('pCat').value||null});
-  LS.set('places',JSON.stringify(ps)); $('pName').value=''; $('pLink').value=''; $('pCur').checked=false; unpick();
+  ps.push({name,lat,lon,r:Math.max(30,Math.round(acc),Number($('pR').value)||100),lists:state.draft.slice(),cat:$('pCat').value||null});
+  LS.set('places',JSON.stringify(ps)); $('pName').value=''; $('pLink').value=''; state.draft=[]; renderDraft(); unpick();
   m.textContent='Gespeichert: '+name+(acc?' (Genauigkeit ±'+Math.round(acc)+' m)':'')+'. Gleicher Name = Ort wird neu gesetzt.';
   renderPlaces(); updateMap(false); refresh(true);
 }
 function fillCats(){
-  $('pCat').innerHTML='<option value="">Ortstyp automatisch</option>'+Object.entries(PLACES).map(([k,v])=>`<option value="${k}">${v.l}</option>`).join('');
+  const opts=Object.entries(PLACES).map(([k,v])=>`<option value="${k}">${v.l}</option>`).join('');
+  $('pCat').innerHTML='<option value="">Ortstyp automatisch</option>'+opts;
+  $('tCat').innerHTML=opts;
 }
 async function exportAll(){
-  const s=JSON.stringify({places:savedPlaces(),hist:hist()});
+  const s=JSON.stringify({places:savedPlaces(),types:typeMap(),hist:hist()});
   try{ await navigator.clipboard.writeText(s); $('pMsg').textContent='Kopiert. Auf dem anderen Gerät „Einstellungen einfügen“ wählen.'; }
   catch(e){ prompt('Diesen Text kopieren:',s); }
 }
@@ -408,8 +472,9 @@ function importAll(){
   const s=prompt('Kopierten Text hier einfügen:'); if(!s) return;
   try{ const d=JSON.parse(s);
     if(Array.isArray(d.places)) LS.set('places',JSON.stringify(d.places));
+    if(d.types&&typeof d.types==='object') LS.set('types',JSON.stringify(d.types));
     if(Array.isArray(d.hist)) LS.set('hist',JSON.stringify(d.hist.slice(-500)));
-    renderPlaces(); $('pMsg').textContent='Übernommen.'; refresh(true);
+    renderPlaces(); renderTypes(); $('pMsg').textContent='Übernommen.'; refresh(true);
   }catch(e){ $('pMsg').textContent='Der Text ist ungültig.'; }
 }
 
@@ -476,9 +541,9 @@ function popupBox(title,sub,btns){
 }
 function openPlacePopup(p,ll){
   const btns=[];
-  if(p.uri) btns.push(['Abspielen',()=>{ playUri(p.uri,p.name); map.closePopup(); }]);
+  placeLists(p).slice(0,6).forEach(l=>btns.push(['Abspielen: '+l.name,()=>{ playUri(l.uri,l.name); map.closePopup(); }]));
   btns.push(['Ort ändern',()=>{ editPlace(p); map.closePopup(); }]);
-  L.popup().setLatLng(ll).setContent(popupBox(p.name,(p.cat?PLACES[p.cat].l+', ':'')+(p.uri?'feste Playlist':'keine feste Playlist'),btns)).openOn(map);
+  L.popup().setLatLng(ll).setContent(popupBox(p.name,(p.cat?PLACES[p.cat].l+', ':'')+(placeLists(p).length?placeLists(p).length+' Playlist(s)':'keine feste Playlist'),btns)).openOn(map);
 }
 function setPick(lat,lon,popup){
   state.pick={lat,lon};
@@ -500,6 +565,7 @@ function unpick(){
 function editPlace(p){
   setPick(p.lat,p.lon,false);
   $('pName').value=p.name; $('pCat').value=p.cat||''; $('pR').value=p.r; $('pLink').value='';
+  state.draft=placeLists(p).map(l=>({...l})); renderDraft();
   $('placesBox').open=true; $('pMsg').textContent='Ändere die Felder und tippe auf „Diesen Ort speichern“. Der gleiche Name überschreibt den alten Eintrag.';
 }
 async function pointPlaylists(lat,lon){
@@ -579,6 +645,8 @@ async function init(){
   $('btnDown').onclick = ()=>{ learn(state.results[state.idx],-3); $('btnOther').click(); };
   $('btnHome').onclick = ()=>{ $('pName').value='Zuhause'; $('pCat').value='zuhause'; $('pName').focus(); };
   $('btnSavePlace').onclick = savePlace; $('btnUnpick').onclick = unpick;
+  $('btnAddLink').onclick = addDraftLink; $('btnAddCur').onclick = addDraftCur;
+  $('btnTAdd').onclick = ()=>addType(false); $('btnTCur').onclick = ()=>addType(true);
   $('btnLocate').onclick = ()=>{ refresh(false).then(()=>updateMap(true)); }; $('btnExport').onclick = exportAll; $('btnImport').onclick = importAll;
   const run = ()=>{ const v=$('custom').value.trim(); if(v) findPlaylists(v); };
   $('btnCustom').onclick = run; $('custom').onkeydown = e=>{ if(e.key==='Enter') run(); };
@@ -593,7 +661,7 @@ async function init(){
   }
   if(!(await token())){ showLogin(); return; }
 
-  showApp(); buildChips(); fillCats(); renderPlaces(); initMap(); paint();
+  showApp(); buildChips(); fillCats(); renderPlaces(); renderTypes(); renderDraft(); initMap(); paint();
   await loadWeather(); paint(); updateMap(true); loadNearby();
   await findPlaylists();
   setInterval(paint, 60000); setInterval(()=>refresh(false), 600000);
